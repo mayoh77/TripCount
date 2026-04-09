@@ -4,7 +4,7 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
 import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged }
   from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
-import { getFirestore, collection, doc, addDoc, updateDoc, deleteDoc,
+import { getFirestore, collection, doc, addDoc, setDoc, updateDoc, deleteDoc,
   onSnapshot, query, orderBy, serverTimestamp, deleteField }
   from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
 import { getStorage, ref as storageRef, uploadBytes, getDownloadURL }
@@ -504,21 +504,26 @@ async function saveTrip() {
     };
 
     if (editingId) {
-      // 1. Remove image field entirely (kills any legacy base64)
-      await updateDoc(tripDoc(editingId), { image: deleteField() });
-      // 2. Write safe fields
-      await updateDoc(tripDoc(editingId), { ...safe, updatedAt: serverTimestamp() });
-      // 3. If new image chosen, compress → Storage → save URL
+      // Determine image URL BEFORE writing to Firestore
+      let imageUrl = null;
       if (pendingFile) {
-        const url = await uploadImage(pendingFile, editingId);
-        await updateDoc(tripDoc(editingId), { image: url });
+        // User picked new file → compress + upload first
+        imageUrl = await uploadImage(pendingFile, editingId);
       } else if (isStorageUrl(existing?.image)) {
-        // Keep existing Storage URL
-        await updateDoc(tripDoc(editingId), { image: existing.image });
+        // Keep existing valid Storage URL
+        imageUrl = existing.image;
       }
+      // Use setDoc with merge:false on a clean object → completely replaces document
+      // This avoids Firestore ever seeing the old oversized base64 field
+      await setDoc(tripDoc(editingId), {
+        ...safe,
+        image: imageUrl,
+        updatedAt: serverTimestamp(),
+        createdAt: existing?.createdAt || serverTimestamp(),
+      });
     } else {
-      // New trip – first create doc to get ID, then upload image with that ID
-      const ref  = await addDoc(tripsRef(), { ...safe, image: null, createdAt: serverTimestamp() });
+      // New trip – create doc first to get ID, then upload image
+      const ref = await addDoc(tripsRef(), { ...safe, image: null, createdAt: serverTimestamp() });
       if (pendingFile) {
         const url = await uploadImage(pendingFile, ref.id);
         await updateDoc(ref, { image: url });
