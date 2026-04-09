@@ -255,16 +255,18 @@ function pickSuggestion(idx) {
 function hideAC() {
   const list = document.getElementById('autocomplete-list');
   if (list) list.classList.add('hidden');
-  acResults = [];
+  // Small delay before clearing results so touchstart can still read them
+  setTimeout(() => { acResults = []; }, 300);
 }
 
 function initAutocomplete() {
-  // Called once at boot via event delegation on document
   if (window._acBound) return;
   window._acBound = true;
 
-  async function doSearch(val) {
+  // ── Search trigger ──
+  function triggerSearch(inputEl) {
     clearTimeout(acTimer);
+    const val = (inputEl.value || '').trim();
     if (val.length < 2) { hideAC(); return; }
     const list = document.getElementById('autocomplete-list');
     if (!list) return;
@@ -272,27 +274,46 @@ function initAutocomplete() {
     list.classList.remove('hidden');
     acTimer = setTimeout(async () => {
       try {
-        renderSuggestions(await fetchPlaces(val));
+        const results = await fetchPlaces(val);
+        renderSuggestions(results);
       } catch (err) {
         const l = document.getElementById('autocomplete-list');
-        if (l) { l.innerHTML = `<div class="autocomplete-loading">⚠️ Suche fehlgeschlagen</div>`; l.classList.remove('hidden'); }
+        if (l) {
+          l.innerHTML = '<div class="autocomplete-loading">⚠️ Keine Verbindung</div>';
+          l.classList.remove('hidden');
+        }
       }
     }, 350);
   }
 
-  // All three events for maximum Android compatibility
-  ['input','keyup','compositionend'].forEach(evt =>
-    document.addEventListener(evt, e => {
-      if (e.target && e.target.id === 'input-dest') doSearch(e.target.value.trim());
-    })
-  );
+  // ── Input events (all variants for Android) ──
+  document.addEventListener('input',          e => { if (e.target?.id === 'input-dest') triggerSearch(e.target); });
+  document.addEventListener('keyup',          e => { if (e.target?.id === 'input-dest') triggerSearch(e.target); });
+  document.addEventListener('compositionend', e => { if (e.target?.id === 'input-dest') triggerSearch(e.target); });
 
-  // Handle suggestion selection via both click and touchend
-  document.addEventListener('pointerup', e => {
-    const item = e.target.closest && e.target.closest('.autocomplete-item');
-    if (item) { pickSuggestion(parseInt(item.dataset.idx)); return; }
-    if (e.target.id !== 'input-dest') hideAC();
+  // ── Click on suggestion ──
+  document.addEventListener('click', e => {
+    const item = e.target?.closest('.autocomplete-item');
+    if (item) {
+      e.preventDefault();
+      e.stopPropagation();
+      pickSuggestion(parseInt(item.dataset.idx));
+      return;
+    }
+    // Close if clicking outside input AND outside list
+    const inInput = e.target?.id === 'input-dest';
+    const inList  = e.target?.closest('#autocomplete-list');
+    if (!inInput && !inList) hideAC();
   });
+
+  // ── Touch on suggestion (mobile) ──
+  document.addEventListener('touchstart', e => {
+    const item = e.target?.closest('.autocomplete-item');
+    if (item) {
+      e.preventDefault();
+      pickSuggestion(parseInt(item.dataset.idx));
+    }
+  }, { passive: false });
 }
 
 // ════════════════════════════════════════
@@ -310,9 +331,10 @@ function requestGPS() {
     const c = document.getElementById('gps-coords');
     if (c) { c.textContent = `📍 ${lat.toFixed(5)}, ${lng.toFixed(5)}`; c.classList.remove('hidden'); }
     hideAC();
-    fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}`, { headers:{'Accept-Language':'de'} })
+    fetch(`https://photon.komoot.io/reverse?lat=${lat}&lon=${lng}&lang=de`)
       .then(r => r.json()).then(d => {
-        const name = d.address?.city || d.address?.town || d.address?.state || '';
+        const f = d?.features?.[0]?.properties || {};
+        const name = f.city || f.town || f.name || f.state || '';
         pendingGps.name = name;
         const el = document.getElementById('input-dest');
         if (el && !el.value.trim()) el.value = name;
