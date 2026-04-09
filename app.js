@@ -5,7 +5,7 @@ import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/fireba
 import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged }
   from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
 import { getFirestore, collection, doc, addDoc, updateDoc, deleteDoc,
-  onSnapshot, query, orderBy, serverTimestamp }
+  onSnapshot, query, orderBy, serverTimestamp, deleteField }
   from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
 import { getStorage, ref as storageRef, uploadBytes, getDownloadURL }
   from "https://www.gstatic.com/firebasejs/10.12.0/firebase-storage.js";
@@ -207,19 +207,17 @@ function hideAutocomplete() {
   acResults = [];
 }
 
-let acInitialized = false;
 function initAutocomplete() {
-  if (acInitialized) return;
-  acInitialized = true;
+  // Called every time modal opens – safe because we check if already bound
   const input = document.getElementById('input-dest');
-  if (!input) return;
+  const list  = document.getElementById('autocomplete-list');
+  if (!input || !list || input.dataset.acBound) return;
+  input.dataset.acBound = '1'; // mark as bound so we don't double-attach
 
   input.addEventListener('input', () => {
     clearTimeout(acTimer);
     const val = input.value.trim();
     if (val.length < 2) { hideAutocomplete(); return; }
-    // Show loading
-    const list = document.getElementById('autocomplete-list');
     list.innerHTML = '<div class="autocomplete-loading">🔍 Suche …</div>';
     list.classList.remove('hidden');
     acTimer = setTimeout(async () => {
@@ -227,16 +225,15 @@ function initAutocomplete() {
         const results = await fetchSuggestions(val);
         showAutocomplete(results);
       } catch { hideAutocomplete(); }
-    }, 350);
+    }, 400);
   });
 
-  document.getElementById('autocomplete-list').addEventListener('click', e => {
+  list.addEventListener('click', e => {
     const item = e.target.closest('.autocomplete-item');
     if (!item) return;
     selectSuggestion(parseInt(item.dataset.idx));
   });
 
-  // Hide on outside click
   document.addEventListener('click', e => {
     if (!e.target.closest('#input-dest') && !e.target.closest('#autocomplete-list')) {
       hideAutocomplete();
@@ -494,8 +491,10 @@ function openEdit(id) {
   hideAutocomplete(); updateEmojiPicker(); openModal();
 }
 function openModal() {
-  const ov=document.getElementById('modal-overlay');
-  ov.classList.remove('hidden'); requestAnimationFrame(()=>ov.style.opacity='1');
+  const ov = document.getElementById('modal-overlay');
+  ov.classList.remove('hidden');
+  requestAnimationFrame(() => ov.style.opacity = '1');
+  setTimeout(initAutocomplete, 80); // DOM is ready after short delay
 }
 function closeModal() {
   const ov=document.getElementById('modal-overlay');
@@ -504,56 +503,50 @@ function closeModal() {
 }
 
 async function saveTrip() {
-  const dest=document.getElementById('input-dest').value.trim();
-  const start=document.getElementById('input-start').value;
-  const end=document.getElementById('input-end').value;
-  const notes=document.getElementById('input-notes').value.trim();
-  if(!dest){showFormError('Bitte gib ein Reiseziel ein.');return;}
-  if(!start){showFormError('Bitte wähle ein Abreisedatum.');return;}
-  if(end&&end<start){showFormError('Rückkehr kann nicht vor der Abreise liegen.');return;}
+  const dest  = document.getElementById('input-dest').value.trim();
+  const start = document.getElementById('input-start').value;
+  const end   = document.getElementById('input-end').value;
+  const notes = document.getElementById('input-notes').value.trim();
+  if (!dest)  { showFormError('Bitte gib ein Reiseziel ein.'); return; }
+  if (!start) { showFormError('Bitte wähle ein Abreisedatum.'); return; }
+  if (end && end < start) { showFormError('Rückkehr kann nicht vor der Abreise liegen.'); return; }
   document.getElementById('form-error').classList.add('hidden');
-  const btn=document.getElementById('btn-save-trip');
-  btn.textContent='Speichern …'; btn.disabled=true;
+  const btn = document.getElementById('btn-save-trip');
+  btn.textContent = 'Speichern …'; btn.disabled = true;
   try {
-    let imageUrl=null;
-    const imgEl=document.getElementById('image-preview');
-    if(pendingFile) {
-      // New file selected – compress and upload
-      imageUrl=await uploadImageToStorage(pendingFile, editingId||null);
-    } else if(imgEl.style.display!=='none' && imgEl.src
-              && !imgEl.src.startsWith('data:')   // never re-send base64
-              && !imgEl.src.startsWith('blob:')) { // never re-send local blob
-      // Existing Firebase Storage URL – keep as-is
-      imageUrl=imgEl.src;
-    } else if(editingId) {
-      // No new file, no preview shown → keep whatever was stored before (don't overwrite with null)
-      const existing = trips.find(t=>t.id===editingId);
-      if(existing?.image && !existing.image.startsWith('data:')) imageUrl = existing.image;
-    }
-    const existing = editingId ? trips.find(t=>t.id===editingId) : null;
-    // Base fields (never include image here if editing – handled separately)
-    const baseData = {
-      destination:dest, startDate:start, endDate:end||null, notes, emoji:selectedEmoji,
+    const existing = editingId ? trips.find(t => t.id === editingId) : null;
+
+    // ── Fields that never contain the image ──
+    const safeFields = {
+      destination: dest, startDate: start, endDate: end || null,
+      notes, emoji: selectedEmoji,
       checklist: existing?.checklist || [],
-      gradientIndex: existing?.gradientIndex ?? Math.floor(Math.random()*GRADIENTS.length),
-      lat: pendingGps?.lat||null, lng: pendingGps?.lng||null, gpsName: pendingGps?.name||null,
+      gradientIndex: existing?.gradientIndex ?? Math.floor(Math.random() * GRADIENTS.length),
+      lat: pendingGps?.lat || null, lng: pendingGps?.lng || null, gpsName: pendingGps?.name || null,
     };
-    if(editingId) {
-      // Only update image field if user picked a new file
-      const updateData = {...baseData, updatedAt:serverTimestamp()};
-      if(pendingFile) {
-        updateData.image = imageUrl; // new file was uploaded
-      } else if(imageRemovedByUser) {
-        updateData.image = null;     // user clicked ✕ to remove
+
+    if (editingId) {
+      // Step 1: Always wipe the image field first (removes legacy base64)
+      await updateDoc(tripDoc(editingId), { image: deleteField() });
+      // Step 2: Update all safe fields
+      await updateDoc(tripDoc(editingId), { ...safeFields, updatedAt: serverTimestamp() });
+      // Step 3: If user uploaded a new file, upload + set URL
+      if (pendingFile) {
+        const url = await uploadImageToStorage(pendingFile, editingId);
+        await updateDoc(tripDoc(editingId), { image: url });
       }
-      // else: image untouched → don't include in update at all
-      await updateDoc(tripDoc(editingId), updateData);
+      // (If no new file: image stays deleted = no image. User can add one separately.)
     } else {
-      await addDoc(tripsRef(), {...baseData, image:imageUrl, createdAt:serverTimestamp()});
+      // New trip: upload image first if any, then create doc
+      let imageUrl = null;
+      if (pendingFile) imageUrl = await uploadImageToStorage(pendingFile, null);
+      await addDoc(tripsRef(), { ...safeFields, image: imageUrl, createdAt: serverTimestamp() });
     }
-    closeModal(); showToast(editingId?'✏️ Reise aktualisiert!':'✈️ Reise gespeichert!');
-  } catch(e) { showFormError('Fehler: '+e.message); }
-  finally { btn.textContent='Reise speichern ✈'; btn.disabled=false; }
+
+    closeModal();
+    showToast(editingId ? '✏️ Reise aktualisiert!' : '✈️ Reise gespeichert!');
+  } catch(e) { showFormError('Fehler: ' + e.message); }
+  finally { btn.textContent = 'Reise speichern ✈'; btn.disabled = false; }
 }
 async function deleteTrip() {
   if(!editingId||!confirm('Diese Reise wirklich löschen?')) return;
@@ -610,7 +603,6 @@ function exportJSON() {
 //  INIT
 // ════════════════════════════════════════
 document.addEventListener('DOMContentLoaded', () => {
-  initAutocomplete();
   document.getElementById('btn-google-login').addEventListener('click', loginGoogle);
   ['btn-open-add','btn-empty-add','btn-nav-add','btn-map-add','btn-archive-add']
     .forEach(id=>document.getElementById(id)?.addEventListener('click',openAdd));
