@@ -207,11 +207,12 @@ input[type="date"].form-input::-webkit-calendar-picker-indicator{filter:invert(.
 
 /* ── Autocomplete ── */
 .autocomplete-list {
-  position:absolute; top:calc(100% + 4px); left:0; right:0; z-index:500;
-  background:#1E1E35; border:1px solid var(--card-border);
+  position:absolute; top:calc(100% + 4px); left:0; right:0;
+  z-index:9999;  /* above everything including modal */
+  background:#1E1E35; border:1px solid rgba(232,115,90,0.4);
   border-radius:14px; overflow:hidden;
-  box-shadow:0 8px 24px rgba(0,0,0,.5);
-  max-height:220px; overflow-y:auto;
+  box-shadow:0 12px 32px rgba(0,0,0,.7);
+  max-height:240px; overflow-y:auto;
 }
 .autocomplete-list.hidden { display:none; }
 .autocomplete-item {

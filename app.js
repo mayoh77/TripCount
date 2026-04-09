@@ -228,34 +228,46 @@ function hideAC() {
 }
 
 function initAutocomplete() {
-  // Use event delegation on document – works regardless of modal visibility
-  // Guard: only attach once
   if (window._acBound) return;
   window._acBound = true;
 
-  document.addEventListener('input', e => {
-    if (e.target.id !== 'input-dest') return;
+  // Trigger function – called by both input and keyup
+  function triggerSearch(inputEl) {
     clearTimeout(acTimer);
-    const val = e.target.value.trim();
+    const val = inputEl.value.trim();
     if (val.length < 2) { hideAC(); return; }
     const list = document.getElementById('autocomplete-list');
     if (!list) return;
     list.innerHTML = '<div class="autocomplete-loading">🔍 Suche …</div>';
     list.classList.remove('hidden');
     acTimer = setTimeout(async () => {
-      try { renderSuggestions(await fetchPlaces(val)); }
-      catch (err) {
-        console.error('Autocomplete error:', err);
-        const list = document.getElementById('autocomplete-list');
-        if (list) { list.innerHTML = `<div class="autocomplete-loading">⚠️ ${err.message}</div>`; list.classList.remove('hidden'); }
+      try {
+        const results = await fetchPlaces(val);
+        renderSuggestions(results);
+      } catch (err) {
+        console.error('AC error:', err);
+        const l = document.getElementById('autocomplete-list');
+        if (l) { l.innerHTML = `<div class="autocomplete-loading">⚠️ ${err.message}</div>`; l.classList.remove('hidden'); }
       }
-    }, 400);
-  });
+    }, 350);
+  }
+
+  // Use both 'input' AND 'keyup' – Android Chrome sometimes only fires one
+  document.addEventListener('input',  e => { if (e.target.id === 'input-dest') triggerSearch(e.target); });
+  document.addEventListener('keyup',  e => { if (e.target.id === 'input-dest') triggerSearch(e.target); });
+  // compositionend handles CJK / autocorrect on mobile
+  document.addEventListener('compositionend', e => { if (e.target.id === 'input-dest') triggerSearch(e.target); });
 
   document.addEventListener('click', e => {
     const item = e.target.closest('.autocomplete-item');
     if (item) { pickSuggestion(parseInt(item.dataset.idx)); return; }
     if (!e.target.closest('#input-dest') && !e.target.closest('#autocomplete-list')) hideAC();
+  });
+  
+  // Touch: tapping a suggestion on mobile fires touchend before click – handle both
+  document.addEventListener('touchend', e => {
+    const item = e.target.closest('.autocomplete-item');
+    if (item) { e.preventDefault(); pickSuggestion(parseInt(item.dataset.idx)); }
   });
 }
 
