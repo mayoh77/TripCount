@@ -202,29 +202,29 @@ function hideAC() {
 }
 
 function initAutocomplete() {
-  const input = document.getElementById('input-dest');
-  const list  = document.getElementById('autocomplete-list');
-  if (!input || !list || input.dataset.acReady) return;
-  input.dataset.acReady = '1';
+  // Use event delegation on document – works regardless of modal visibility
+  // Guard: only attach once
+  if (window._acBound) return;
+  window._acBound = true;
 
-  input.addEventListener('input', () => {
+  document.addEventListener('input', e => {
+    if (e.target.id !== 'input-dest') return;
     clearTimeout(acTimer);
-    const val = input.value.trim();
+    const val = e.target.value.trim();
     if (val.length < 2) { hideAC(); return; }
+    const list = document.getElementById('autocomplete-list');
+    if (!list) return;
     list.innerHTML = '<div class="autocomplete-loading">🔍 Suche …</div>';
     list.classList.remove('hidden');
     acTimer = setTimeout(async () => {
       try { renderSuggestions(await fetchPlaces(val)); }
-      catch { hideAC(); }
+      catch (err) { console.error('Autocomplete error:', err); hideAC(); }
     }, 400);
   });
 
-  list.addEventListener('click', e => {
-    const item = e.target.closest('.autocomplete-item');
-    if (item) pickSuggestion(parseInt(item.dataset.idx));
-  });
-
   document.addEventListener('click', e => {
+    const item = e.target.closest('.autocomplete-item');
+    if (item) { pickSuggestion(parseInt(item.dataset.idx)); return; }
     if (!e.target.closest('#input-dest') && !e.target.closest('#autocomplete-list')) hideAC();
   });
 }
@@ -429,8 +429,7 @@ function resetModal() {
   const gs=document.getElementById('gps-status');if(gs)gs.classList.add('hidden');
   const gc=document.getElementById('gps-coords');if(gc)gc.classList.add('hidden');
   document.getElementById('image-input').value='';
-  // Reset autocomplete guard so it re-binds on next open
-  const inp=document.getElementById('input-dest');if(inp) delete inp.dataset.acReady;
+  // Autocomplete uses event delegation – no reset needed
 }
 
 function openAdd() {
@@ -470,7 +469,6 @@ function openModal() {
   const ov=document.getElementById('modal-overlay');
   ov.classList.remove('hidden');
   requestAnimationFrame(()=>ov.style.opacity='1');
-  setTimeout(initAutocomplete, 100);
 }
 function closeModal() {
   const ov=document.getElementById('modal-overlay');
@@ -585,6 +583,7 @@ function exportJSON() {
 //  BOOT
 // ════════════════════════════════════════
 document.addEventListener('DOMContentLoaded', () => {
+  initAutocomplete(); // bind once via event delegation
   document.getElementById('btn-google-login').addEventListener('click', loginGoogle);
 
   ['btn-open-add','btn-empty-add','btn-nav-add','btn-map-add','btn-archive-add']
