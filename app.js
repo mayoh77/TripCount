@@ -156,10 +156,26 @@ async function uploadImage(file, tripId) {
 //  ADDRESS AUTOCOMPLETE
 // ════════════════════════════════════════
 async function fetchPlaces(q) {
-  const url = `https://nominatim.openstreetmap.org/search?format=json&limit=6&addressdetails=1&q=${encodeURIComponent(q)}`;
-  const r   = await fetch(url, { headers: { 'Accept-Language': 'de-DE,de;q=0.9' } });
-  if (!r.ok) throw new Error('Nominatim Fehler');
-  return r.json();
+  // Photon by Komoot – CORS-enabled geocoding, no User-Agent required
+  const url = `https://photon.komoot.io/api/?q=${encodeURIComponent(q)}&limit=6&lang=de`;
+  const r   = await fetch(url);
+  if (!r.ok) throw new Error(`Geocoding Fehler ${r.status}`);
+  const data = await r.json();
+  // Normalize Photon GeoJSON → same shape renderSuggestions expects
+  return (data.features || []).map(f => ({
+    display_name: [f.properties.name, f.properties.city, f.properties.country].filter(Boolean).join(', '),
+    lat: String(f.geometry.coordinates[1]),
+    lon: String(f.geometry.coordinates[0]),
+    type: f.properties.type || 'place',
+    class: f.properties.osm_value || '',
+    address: {
+      city:    f.properties.city || f.properties.name,
+      town:    f.properties.city,
+      village: f.properties.village,
+      state:   f.properties.state,
+      country: f.properties.country,
+    }
+  }));
 }
 
 function placeIcon(type, cls) {
@@ -171,11 +187,15 @@ function placeIcon(type, cls) {
 function renderSuggestions(results) {
   const list = document.getElementById('autocomplete-list');
   if (!list) return;
-  if (!results.length) { list.classList.add('hidden'); return; }
+  if (!results.length) {
+    list.innerHTML = '<div class="autocomplete-loading">Keine Ergebnisse</div>';
+    list.classList.remove('hidden');
+    return;
+  }
   acResults = results;
   list.innerHTML = results.map((r, i) => {
-    const main = r.address?.city || r.address?.town || r.address?.village || r.address?.state || r.address?.country || r.display_name.split(',')[0];
-    const sub  = r.display_name.split(',').slice(1, 3).join(', ').trim();
+    const main = r.address?.city || r.address?.town || r.address?.village || r.address?.state || r.display_name.split(',')[0];
+    const sub  = [r.address?.state, r.address?.country].filter(Boolean).join(', ');
     return `<div class="autocomplete-item" data-idx="${i}">
       <div class="ac-icon">${placeIcon(r.type, r.class)}</div>
       <div><div class="ac-main">${escHtml(main)}</div><div class="ac-sub">${escHtml(sub)}</div></div>
@@ -191,7 +211,13 @@ function pickSuggestion(idx) {
   if (el) el.value = name;
   pendingGps = { lat: parseFloat(r.lat), lng: parseFloat(r.lon), name };
   const coordEl = document.getElementById('gps-coords');
-  if (coordEl) { coordEl.textContent = `📍 ${pendingGps.lat.toFixed(5)}, ${pendingGps.lng.toFixed(5)} · ${name}`; coordEl.classList.remove('hidden'); }
+  if (coordEl) {
+    coordEl.textContent = `📍 ${pendingGps.lat.toFixed(5)}, ${pendingGps.lng.toFixed(5)} · ${name}`;
+    coordEl.classList.remove('hidden');
+  }
+  // Hide GPS status if showing
+  const gs = document.getElementById('gps-status');
+  if (gs) gs.classList.add('hidden');
   hideAC();
 }
 
@@ -218,7 +244,11 @@ function initAutocomplete() {
     list.classList.remove('hidden');
     acTimer = setTimeout(async () => {
       try { renderSuggestions(await fetchPlaces(val)); }
-      catch (err) { console.error('Autocomplete error:', err); hideAC(); }
+      catch (err) {
+        console.error('Autocomplete error:', err);
+        const list = document.getElementById('autocomplete-list');
+        if (list) { list.innerHTML = `<div class="autocomplete-loading">⚠️ ${err.message}</div>`; list.classList.remove('hidden'); }
+      }
     }, 400);
   });
 
