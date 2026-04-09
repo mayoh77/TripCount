@@ -475,8 +475,18 @@ function openEdit(id) {
   if(trip.lat){coordEl.textContent=`📍 ${trip.lat.toFixed(5)}, ${trip.lng.toFixed(5)}${trip.gpsName?' · '+trip.gpsName:''}`;coordEl.classList.remove('hidden');}
   else coordEl.classList.add('hidden');
   document.getElementById('gps-status').classList.add('hidden');
-  if(trip.image){document.getElementById('image-preview').src=trip.image;document.getElementById('image-preview').style.display='block';document.getElementById('image-preview-wrap').style.display='none';document.getElementById('btn-remove-image').classList.remove('hidden');}
-  else{document.getElementById('image-preview').style.display='none';document.getElementById('image-preview-wrap').style.display='flex';document.getElementById('btn-remove-image').classList.add('hidden');}
+  // Only show image if it's a real URL (not legacy base64)
+  const isRealUrl = trip.image && !trip.image.startsWith('data:');
+  if(isRealUrl){
+    document.getElementById('image-preview').src=trip.image;
+    document.getElementById('image-preview').style.display='block';
+    document.getElementById('image-preview-wrap').style.display='none';
+    document.getElementById('btn-remove-image').classList.remove('hidden');
+  } else {
+    document.getElementById('image-preview').style.display='none';
+    document.getElementById('image-preview-wrap').style.display='flex';
+    document.getElementById('btn-remove-image').classList.add('hidden');
+  }
   hideAutocomplete(); updateEmojiPicker(); openModal();
 }
 function openModal() {
@@ -506,9 +516,17 @@ async function saveTrip() {
     let imageUrl=null;
     const imgEl=document.getElementById('image-preview');
     if(pendingFile) {
+      // New file selected – compress and upload
       imageUrl=await uploadImageToStorage(pendingFile, editingId||null);
-    } else if(imgEl.style.display!=='none'&&imgEl.src&&!imgEl.src.startsWith('data:')&&!imgEl.src.startsWith('blob:')) {
+    } else if(imgEl.style.display!=='none' && imgEl.src
+              && !imgEl.src.startsWith('data:')   // never re-send base64
+              && !imgEl.src.startsWith('blob:')) { // never re-send local blob
+      // Existing Firebase Storage URL – keep as-is
       imageUrl=imgEl.src;
+    } else if(editingId) {
+      // No new file, no preview shown → keep whatever was stored before (don't overwrite with null)
+      const existing = trips.find(t=>t.id===editingId);
+      if(existing?.image && !existing.image.startsWith('data:')) imageUrl = existing.image;
     }
     const data={
       destination:dest, startDate:start, endDate:end||null, notes, emoji:selectedEmoji,
