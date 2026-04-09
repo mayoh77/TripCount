@@ -32,6 +32,7 @@ let editingId     = null;
 let selectedEmoji = '🏖️';
 let pendingGps    = null;
 let pendingFile   = null;
+let imageRemovedByUser = false;
 let leafletMap    = null;
 let mapMarkers    = [];
 let acTimer       = null;   // autocomplete debounce
@@ -206,7 +207,10 @@ function hideAutocomplete() {
   acResults = [];
 }
 
+let acInitialized = false;
 function initAutocomplete() {
+  if (acInitialized) return;
+  acInitialized = true;
   const input = document.getElementById('input-dest');
   if (!input) return;
 
@@ -446,7 +450,7 @@ async function addCheck(tripId) {
 //  ADD / EDIT MODAL
 // ════════════════════════════════════════
 function openAdd() {
-  editingId=null; selectedEmoji='🏖️'; pendingGps=null; pendingFile=null;
+  editingId=null; selectedEmoji='🏖️'; pendingGps=null; pendingFile=null; imageRemovedByUser=false;
   document.getElementById('modal-title').textContent='Neue Reise';
   ['input-dest','input-notes'].forEach(id=>document.getElementById(id).value='');
   ['input-start','input-end'].forEach(id=>document.getElementById(id).value='');
@@ -463,7 +467,7 @@ function openAdd() {
 function openEdit(id) {
   const trip=trips.find(t=>t.id===id); if(!trip) return;
   editingId=id; selectedEmoji=trip.emoji||'🏖️';
-  pendingGps=trip.lat?{lat:trip.lat,lng:trip.lng,name:trip.gpsName}:null; pendingFile=null;
+  pendingGps=trip.lat?{lat:trip.lat,lng:trip.lng,name:trip.gpsName}:null; pendingFile=null; imageRemovedByUser=false;
   document.getElementById('modal-title').textContent='Reise bearbeiten';
   document.getElementById('input-dest').value=trip.destination;
   document.getElementById('input-start').value=trip.startDate;
@@ -492,8 +496,6 @@ function openEdit(id) {
 function openModal() {
   const ov=document.getElementById('modal-overlay');
   ov.classList.remove('hidden'); requestAnimationFrame(()=>ov.style.opacity='1');
-  // re-init autocomplete each time modal opens
-  setTimeout(initAutocomplete, 50);
 }
 function closeModal() {
   const ov=document.getElementById('modal-overlay');
@@ -528,15 +530,27 @@ async function saveTrip() {
       const existing = trips.find(t=>t.id===editingId);
       if(existing?.image && !existing.image.startsWith('data:')) imageUrl = existing.image;
     }
-    const data={
+    const existing = editingId ? trips.find(t=>t.id===editingId) : null;
+    // Base fields (never include image here if editing – handled separately)
+    const baseData = {
       destination:dest, startDate:start, endDate:end||null, notes, emoji:selectedEmoji,
-      image:imageUrl,
-      checklist:editingId?(trips.find(t=>t.id===editingId)?.checklist||[]):[],
-      gradientIndex:editingId?(trips.find(t=>t.id===editingId)?.gradientIndex??Math.floor(Math.random()*GRADIENTS.length)):Math.floor(Math.random()*GRADIENTS.length),
-      lat:pendingGps?.lat||null, lng:pendingGps?.lng||null, gpsName:pendingGps?.name||null,
+      checklist: existing?.checklist || [],
+      gradientIndex: existing?.gradientIndex ?? Math.floor(Math.random()*GRADIENTS.length),
+      lat: pendingGps?.lat||null, lng: pendingGps?.lng||null, gpsName: pendingGps?.name||null,
     };
-    if(editingId) await updateDoc(tripDoc(editingId),{...data,updatedAt:serverTimestamp()});
-    else await addDoc(tripsRef(),{...data,createdAt:serverTimestamp()});
+    if(editingId) {
+      // Only update image field if user picked a new file
+      const updateData = {...baseData, updatedAt:serverTimestamp()};
+      if(pendingFile) {
+        updateData.image = imageUrl; // new file was uploaded
+      } else if(imageRemovedByUser) {
+        updateData.image = null;     // user clicked ✕ to remove
+      }
+      // else: image untouched → don't include in update at all
+      await updateDoc(tripDoc(editingId), updateData);
+    } else {
+      await addDoc(tripsRef(), {...baseData, image:imageUrl, createdAt:serverTimestamp()});
+    }
     closeModal(); showToast(editingId?'✏️ Reise aktualisiert!':'✈️ Reise gespeichert!');
   } catch(e) { showFormError('Fehler: '+e.message); }
   finally { btn.textContent='Reise speichern ✈'; btn.disabled=false; }
@@ -596,6 +610,7 @@ function exportJSON() {
 //  INIT
 // ════════════════════════════════════════
 document.addEventListener('DOMContentLoaded', () => {
+  initAutocomplete();
   document.getElementById('btn-google-login').addEventListener('click', loginGoogle);
   ['btn-open-add','btn-empty-add','btn-nav-add','btn-map-add','btn-archive-add']
     .forEach(id=>document.getElementById(id)?.addEventListener('click',openAdd));
@@ -612,7 +627,7 @@ document.addEventListener('DOMContentLoaded', () => {
   uploadArea.addEventListener('click', e=>{if(e.target.id!=='btn-remove-image')imageInput.click();});
   imageInput.addEventListener('change', e=>handleImageUpload(e.target.files[0]));
   document.getElementById('btn-remove-image').addEventListener('click', e=>{
-    e.stopPropagation(); pendingFile=null;
+    e.stopPropagation(); pendingFile=null; imageRemovedByUser=true;
     document.getElementById('image-preview').style.display='none';
     document.getElementById('image-preview-wrap').style.display='flex';
     document.getElementById('btn-remove-image').classList.add('hidden');
