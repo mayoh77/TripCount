@@ -153,6 +153,37 @@ async function uploadImage(file, tripId) {
 }
 
 // ════════════════════════════════════════
+//  FIRESTORE REST API – bypasses SDK size limit
+//  Used to patch corrupted documents with oversized base64 images
+// ════════════════════════════════════════
+async function patchDocViaREST(docId, fields) {
+  const token = await currentUser.getIdToken();
+  const project = 'tripcount-2026';
+  const path = `users/${currentUser.uid}/trips/${docId}`;
+  const url = `https://firestore.googleapis.com/v1/projects/${project}/databases/(default)/documents/${path}`;
+
+  // Build Firestore REST field mask and value format
+  const firestoreFields = {};
+  for (const [key, val] of Object.entries(fields)) {
+    if (val === null)      firestoreFields[key] = { nullValue: null };
+    else if (typeof val === 'string')  firestoreFields[key] = { stringValue: val };
+    else if (typeof val === 'number')  firestoreFields[key] = { doubleValue: val };
+    else if (typeof val === 'boolean') firestoreFields[key] = { booleanValue: val };
+  }
+
+  const fieldPaths = Object.keys(fields).join(',');
+  const patchUrl = `${url}?updateMask.fieldPaths=${encodeURIComponent(fieldPaths)}`;
+
+  const res = await fetch(patchUrl, {
+    method: 'PATCH',
+    headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ fields: firestoreFields })
+  });
+  if (!res.ok) throw new Error(`REST patch failed: ${res.status}`);
+  return res.json();
+}
+
+// ════════════════════════════════════════
 //  ADDRESS AUTOCOMPLETE
 // ════════════════════════════════════════
 async function fetchPlaces(q) {
@@ -228,13 +259,12 @@ function hideAC() {
 }
 
 function initAutocomplete() {
+  // Called once at boot via event delegation on document
   if (window._acBound) return;
   window._acBound = true;
 
-  // Trigger function – called by both input and keyup
-  function triggerSearch(inputEl) {
+  async function doSearch(val) {
     clearTimeout(acTimer);
-    const val = inputEl.value.trim();
     if (val.length < 2) { hideAC(); return; }
     const list = document.getElementById('autocomplete-list');
     if (!list) return;
@@ -242,32 +272,26 @@ function initAutocomplete() {
     list.classList.remove('hidden');
     acTimer = setTimeout(async () => {
       try {
-        const results = await fetchPlaces(val);
-        renderSuggestions(results);
+        renderSuggestions(await fetchPlaces(val));
       } catch (err) {
-        console.error('AC error:', err);
         const l = document.getElementById('autocomplete-list');
-        if (l) { l.innerHTML = `<div class="autocomplete-loading">⚠️ ${err.message}</div>`; l.classList.remove('hidden'); }
+        if (l) { l.innerHTML = `<div class="autocomplete-loading">⚠️ Suche fehlgeschlagen</div>`; l.classList.remove('hidden'); }
       }
     }, 350);
   }
 
-  // Use both 'input' AND 'keyup' – Android Chrome sometimes only fires one
-  document.addEventListener('input',  e => { if (e.target.id === 'input-dest') triggerSearch(e.target); });
-  document.addEventListener('keyup',  e => { if (e.target.id === 'input-dest') triggerSearch(e.target); });
-  // compositionend handles CJK / autocorrect on mobile
-  document.addEventListener('compositionend', e => { if (e.target.id === 'input-dest') triggerSearch(e.target); });
+  // All three events for maximum Android compatibility
+  ['input','keyup','compositionend'].forEach(evt =>
+    document.addEventListener(evt, e => {
+      if (e.target && e.target.id === 'input-dest') doSearch(e.target.value.trim());
+    })
+  );
 
-  document.addEventListener('click', e => {
-    const item = e.target.closest('.autocomplete-item');
+  // Handle suggestion selection via both click and touchend
+  document.addEventListener('pointerup', e => {
+    const item = e.target.closest && e.target.closest('.autocomplete-item');
     if (item) { pickSuggestion(parseInt(item.dataset.idx)); return; }
-    if (!e.target.closest('#input-dest') && !e.target.closest('#autocomplete-list')) hideAC();
-  });
-  
-  // Touch: tapping a suggestion on mobile fires touchend before click – handle both
-  document.addEventListener('touchend', e => {
-    const item = e.target.closest('.autocomplete-item');
-    if (item) { e.preventDefault(); pickSuggestion(parseInt(item.dataset.idx)); }
+    if (e.target.id !== 'input-dest') hideAC();
   });
 }
 
@@ -546,22 +570,28 @@ async function saveTrip() {
     };
 
     if (editingId) {
-      // Determine image URL BEFORE writing to Firestore
+      // Step 1: Use REST API to null out the image field
+      // This bypasses the Firestore SDK's 1MB client-side size check
+      // which would fail when the document contains a legacy base64 image
+      try {
+        await patchDocViaREST(editingId, { image: null });
+      } catch(restErr) {
+        console.warn('REST patch failed, continuing:', restErr.message);
+      }
+
+      // Step 2: Determine new image URL
       let imageUrl = null;
       if (pendingFile) {
-        // User picked new file → compress + upload first
         imageUrl = await uploadImage(pendingFile, editingId);
       } else if (isStorageUrl(existing?.image)) {
-        // Keep existing valid Storage URL
         imageUrl = existing.image;
       }
-      // Use setDoc with merge:false on a clean object → completely replaces document
-      // This avoids Firestore ever seeing the old oversized base64 field
-      await setDoc(tripDoc(editingId), {
+
+      // Step 3: Now the document is small enough for SDK operations
+      await updateDoc(tripDoc(editingId), {
         ...safe,
         image: imageUrl,
         updatedAt: serverTimestamp(),
-        createdAt: existing?.createdAt || serverTimestamp(),
       });
     } else {
       // New trip – create doc first to get ID, then upload image
