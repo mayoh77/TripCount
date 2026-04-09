@@ -151,7 +151,10 @@
       <div class="form-group">
         <label class="form-label">Reiseziel *</label>
         <div style="display:flex;gap:8px;">
-          <input type="text" id="input-dest" class="form-input" placeholder="z. B. Tokio, Japan" style="flex:1"/>
+          <div style="flex:1;position:relative;">
+            <input type="text" id="input-dest" class="form-input" placeholder="Stadt oder Land suchen …" autocomplete="off"/>
+            <div id="autocomplete-list" class="autocomplete-list hidden"></div>
+          </div>
           <button id="btn-gps" class="gps-btn" title="GPS Standort ermitteln">
             <svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" fill="none" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/><path d="M12 12m-9 0a9 9 0 1 0 18 0a9 9 0 1 0-18 0" stroke-dasharray="4 3" stroke-linecap="round"/></svg>
           </button>
