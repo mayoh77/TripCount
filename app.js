@@ -162,24 +162,33 @@ async function patchDocViaREST(docId, fields) {
   const path = `users/${currentUser.uid}/trips/${docId}`;
   const url = `https://firestore.googleapis.com/v1/projects/${project}/databases/(default)/documents/${path}`;
 
-  // Build Firestore REST field mask and value format
-  const firestoreFields = {};
-  for (const [key, val] of Object.entries(fields)) {
-    if (val === null)      firestoreFields[key] = { nullValue: null };
-    else if (typeof val === 'string')  firestoreFields[key] = { stringValue: val };
-    else if (typeof val === 'number')  firestoreFields[key] = { doubleValue: val };
-    else if (typeof val === 'boolean') firestoreFields[key] = { booleanValue: val };
+  // Build Firestore REST value format
+  function toFirestoreValue(val) {
+    if (val === null || val === undefined || val === '') return { nullValue: null };
+    if (typeof val === 'string')  return { stringValue: val };
+    if (typeof val === 'number')  return { doubleValue: val };
+    if (typeof val === 'boolean') return { booleanValue: val };
+    return { stringValue: String(val) };
   }
 
-  const fieldPaths = Object.keys(fields).join(',');
-  const patchUrl = `${url}?updateMask.fieldPaths=${encodeURIComponent(fieldPaths)}`;
+  const firestoreFields = {};
+  for (const [key, val] of Object.entries(fields)) {
+    firestoreFields[key] = toFirestoreValue(val);
+  }
+
+  // Build field mask - each field listed separately
+  const fieldMask = Object.keys(fields).map(k => `updateMask.fieldPaths=${encodeURIComponent(k)}`).join('&');
+  const patchUrl = `${url}?${fieldMask}`;
 
   const res = await fetch(patchUrl, {
     method: 'PATCH',
     headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ fields: firestoreFields })
   });
-  if (!res.ok) throw new Error(`REST patch failed: ${res.status}`);
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(`REST ${res.status}: ${errText.slice(0,100)}`);
+  }
   return res.json();
 }
 
@@ -592,16 +601,7 @@ async function saveTrip() {
     };
 
     if (editingId) {
-      // Step 1: Use REST API to null out the image field
-      // This bypasses the Firestore SDK's 1MB client-side size check
-      // which would fail when the document contains a legacy base64 image
-      try {
-        await patchDocViaREST(editingId, { image: null });
-      } catch(restErr) {
-        console.warn('REST patch failed, continuing:', restErr.message);
-      }
-
-      // Step 2: Determine new image URL
+      // Determine image URL first (before any Firestore write)
       let imageUrl = null;
       if (pendingFile) {
         imageUrl = await uploadImage(pendingFile, editingId);
@@ -609,12 +609,30 @@ async function saveTrip() {
         imageUrl = existing.image;
       }
 
-      // Step 3: Now the document is small enough for SDK operations
-      await updateDoc(tripDoc(editingId), {
-        ...safe,
-        image: imageUrl,
-        updatedAt: serverTimestamp(),
-      });
+      // Check if existing doc has oversized image (legacy base64)
+      const hasLegacyImage = existing?.image && !isStorageUrl(existing.image);
+
+      if (hasLegacyImage) {
+        // Use REST API for the COMPLETE update - bypasses SDK cache entirely
+        await patchDocViaREST(editingId, {
+          destination: dest,
+          startDate: start,
+          endDate: end || '',
+          notes,
+          emoji: selectedEmoji,
+          image: imageUrl || '',
+          lat: pendingGps?.lat || 0,
+          lng: pendingGps?.lng || 0,
+          gpsName: pendingGps?.name || '',
+        });
+      } else {
+        // Normal SDK update for clean documents
+        await updateDoc(tripDoc(editingId), {
+          ...safe,
+          image: imageUrl,
+          updatedAt: serverTimestamp(),
+        });
+      }
     } else {
       // New trip – create doc first to get ID, then upload image
       const ref = await addDoc(tripsRef(), { ...safe, image: null, createdAt: serverTimestamp() });
