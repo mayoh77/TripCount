@@ -229,3 +229,22 @@ input[type="date"].form-input::-webkit-calendar-picker-indicator{filter:invert(.
 .autocomplete-loading {
   padding:14px 16px; font-size:.82rem; color:var(--fog); text-align:center;
 }
+
+/* ══ MAP SCREEN FIX ══
+   Leaflet tiles have z-index ~200-400, controls up to 1000.
+   Bottom nav must sit above all of them. */
+#screen-map #leaflet-map {
+  margin-bottom: calc(64px + var(--safe-bottom));
+}
+#screen-map .bottom-nav,
+#screen-home .bottom-nav,
+#screen-archive .bottom-nav,
+#screen-settings .bottom-nav,
+#screen-detail .bottom-nav {
+  z-index: 2000 !important;
+  position: absolute;
+}
+.leaflet-top,
+.leaflet-bottom {
+  z-index: 900 !important;
+}
