@@ -443,11 +443,41 @@ function initMap() {
   leafletMap = L.map('leaflet-map',{zoomControl:true}).setView([20,10],2);
   L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',{attribution:'© OSM · © CARTO',maxZoom:18}).addTo(leafletMap);
 }
-function renderMap() {
+async function geocodeDestination(destination) {
+  try {
+    const r = await fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(destination)}&limit=1&lang=de`);
+    const d = await r.json();
+    const f = d.features?.[0];
+    if (!f) return null;
+    return { lat: f.geometry.coordinates[1], lng: f.geometry.coordinates[0] };
+  } catch { return null; }
+}
+
+async function renderMap() {
   if (!leafletMap) initMap();
   mapMarkers.forEach(m=>m.remove()); mapMarkers=[];
-  const wc=trips.filter(t=>t.lat&&t.lng);
-  const el=document.getElementById('map-count'); if(el) el.textContent=`${wc.length} Pin${wc.length!==1?'s':''}`;
+
+  const el=document.getElementById('map-count');
+
+  // Auto-geocode trips that have no coordinates yet
+  const missing = trips.filter(t => !t.lat || !t.lng);
+  if (missing.length > 0) {
+    if(el) el.textContent = `📡 ${missing.length} Reise(n) werden geortet …`;
+    for (const t of missing) {
+      const coords = await geocodeDestination(t.destination);
+      if (coords) {
+        // Save coords to Firestore for future use
+        try {
+          await updateDoc(tripDoc(t.id), { lat: coords.lat, lng: coords.lng, gpsName: t.destination });
+        } catch(e) { /* ignore */ }
+        t.lat = coords.lat; t.lng = coords.lng;
+      }
+    }
+  }
+
+  const wc = trips.filter(t => t.lat && t.lng);
+  if(el) el.textContent = `${wc.length} Pin${wc.length!==1?'s':''}`;
+
   wc.forEach(t=>{
     const days=daysUntil(t.startDate), color=days<0?'#A09890':days<=14?'#E8735A':'#D4A853';
     const icon=L.divIcon({className:'',html:`<div style="background:${color};width:36px;height:36px;border-radius:50% 50% 50% 0;transform:rotate(-45deg);border:3px solid white;box-shadow:0 4px 12px rgba(0,0,0,.4);display:flex;align-items:center;justify-content:center;"><span style="transform:rotate(45deg);font-size:16px;">${t.emoji||'✈️'}</span></div>`,iconSize:[36,36],iconAnchor:[18,36],popupAnchor:[0,-38]});
@@ -455,8 +485,9 @@ function renderMap() {
     const m=L.marker([t.lat,t.lng],{icon}).addTo(leafletMap).bindPopup(`<strong style="font-family:'Playfair Display',serif;color:#F5EFE6">${escHtml(t.destination)}</strong><br><span style="font-size:.75rem;color:#A09890">${fmtDate(t.startDate)}</span><br><span style="color:#D4A853;font-weight:600">${dl}</span>`);
     mapMarkers.push(m);
   });
+
   if (wc.length) leafletMap.fitBounds(L.latLngBounds(wc.map(t=>[t.lat,t.lng])),{padding:[40,40],maxZoom:8});
-  setTimeout(()=>leafletMap.invalidateSize(),100);
+  setTimeout(()=>leafletMap.invalidateSize(),150);
 }
 
 // ════════════════════════════════════════
@@ -683,7 +714,7 @@ function handleImageUpload(file) {
 function showScreen(name) {
   document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));
   const el=document.getElementById(`screen-${name}`); if(el) el.classList.add('active');
-  if (name==='map') setTimeout(()=>{initMap();renderMap();leafletMap.invalidateSize();},100);
+  if (name==='map') setTimeout(async ()=>{initMap();await renderMap();leafletMap.invalidateSize();},100);
 }
 function showToast(msg) {
   const t=document.getElementById('toast');
